@@ -55,10 +55,16 @@ class GreatKingdomGame:
         self.player2_castles = set()
 
         self.empty_indices = []
+
+        self.seiged_castles = set()
+
         for i in range(self.board_size):
             for j in range(self.board_size):
                 self.empty_indices.append((i, j))
         self.empty_indices.remove((center, center))
+
+    def get_current_state(self):
+        return GameState(self.board, self.current_player, self.consecutive_passes, self.game_over, self.winner)
 
     def reset(self):
         self.board = np.zeros((self.board_size, self.board_size), dtype=int)
@@ -72,6 +78,7 @@ class GreatKingdomGame:
         self.player2_territories.clear()
         self.player1_castles.clear()
         self.player2_castles.clear()
+        self.seiged_castles.clear()
         
         self.empty_indices = []
         for i in range(self.board_size):
@@ -172,6 +179,7 @@ class GreatKingdomGame:
         self.compute_confirmed_territories()
         self.consecutive_passes = 0
         self.current_player = PLAYER1 if self.current_player == PLAYER2 else PLAYER2
+
         return True
 
     def compute_confirmed_territories(self):
@@ -373,6 +381,10 @@ class GreatKingdomGame:
             if EMPTY in adjacent_information:
                 continue
 
+            # seiged_castles에 추가
+            for x, y in blob:
+                self.seiged_castles.add((x, y))
+
             self.game_over = True
             self.winner = self.current_player
 
@@ -414,6 +426,60 @@ class GreatKingdomGame:
                     symbol = TERRITORY_SYMBOLS[PLAYER2]
                 else:
                     symbol = CELL_SYMBOLS.get(cell, '.')
+                if (i, j) in self.seiged_castles:
+                    symbol = 'X'
                 row += ' ' + symbol
             print(row)
         print()
+
+if __name__ == '__main__':
+    game = GreatKingdomGame()
+
+    while not game.game_over:
+        print('현재 보드의 상태')
+        game.print_board()
+        print('플레이어 {}의 차례입니다.'.format(game.current_player))
+        print('캐슬을 놓을 위치(x, y)를 입력하세요.')
+        print('턴을 넘기려면 "pass"를 입력하세요.')
+
+        user_input = input("입력: ").strip().lower()
+
+        if user_input == "pass":
+            # 턴을 넘긴다.
+            passed = game.pass_turn()
+            if not passed:
+                print("이미 게임이 종료되었습니다.")
+            else:
+                if game.game_over:  # 패스 후 게임이 종료되면 승자 판정
+                    print("게임이 종료되었습니다!")
+                    break
+        else:
+            # 좌표로 가정하고 시도
+            try:
+                x_str, y_str = user_input.split()
+                x, y = int(x_str), int(y_str)
+
+                placed = game.place_castle(x, y)
+                if not placed:
+                    print("해당 위치에 둥지를 놓을 수 없습니다. 다시 시도해주세요.")
+            except ValueError:
+                print("잘못된 입력입니다. (예: '3 4' 또는 'pass')")
+
+        # 만약 방금 둔 행동(캐슬 배치)으로 공성전(seige)이 발생해 게임 종료라면 루프 탈출
+        if game.game_over:
+            print("게임이 종료되었습니다!")
+            break
+
+    # 최종 보드 상태 출력
+    print("\n최종 보드 상태:")
+    game.print_board()
+
+    if game.winner == PLAYER1:
+        print("승리: 파란색 성(PLAYER1)")
+    elif game.winner == PLAYER2:
+        print("승리: 주황색 성(PLAYER2)")
+    else:
+        # 아직 승자가 없는 경우(예: 보류, 무승부 상황 등) 처리
+        # 현재 로직에서는 무승부 처리 없이 한 플레이어가 이기는 형태지만
+        # 혹시 모를 상황을 대비해 남겨둠
+        print("승자가 결정되지 않았습니다.")
