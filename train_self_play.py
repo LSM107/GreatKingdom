@@ -1,5 +1,3 @@
-# train_self_play.py
-
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -8,12 +6,13 @@ from copy import deepcopy
 from collections import deque
 import random
 import matplotlib.pyplot as plt
+import os
+import time
+
+from tqdm import tqdm  # [CHANGED] TQDM 임포트
 
 from game import GreatKingdomGame, GameState, PLAYER1, PLAYER2, NEUTRAL, EMPTY
 from model import AlphaZeroNet, MCTS
-
-import os
-import time
 
 time_now = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time()))
 
@@ -44,13 +43,14 @@ def self_play_episode(game: GreatKingdomGame, network: AlphaZeroNet, mcts_iterat
     current_players = []
     moves = []
     state = GameState(deepcopy(game.board), game.current_player, game.consecutive_passes, game.game_over, game.winner)
+
     mcts = MCTS(game, network, iterations=mcts_iterations)
 
     while not state.game_over:
         board_tensor = preprocess_board_for_training(state.board, board_size=game.board_size)
         valid_moves = game.get_valid_moves_board(state.board, state.current_player)
 
-        root = mcts.run_mcts(state)
+        root = mcts.run_mcts(state)  # MCTS 실행
         visit_counts = []
         for a in range(game.get_action_size()):
             child = root.children.get(a)
@@ -113,7 +113,7 @@ def rotate_180(state):
     return np.rot90(state, 2, axes=(1, 2))
 
 def flip_pi_up_down(pi, board_size):
-    pass_index = board_size*board_size
+    pass_index = board_size * board_size
     pi_2d = pi[:pass_index].reshape(board_size, board_size)
     pi_2d = np.flipud(pi_2d)
     pi_new = pi_2d.flatten()
@@ -121,7 +121,7 @@ def flip_pi_up_down(pi, board_size):
     return pi_new
 
 def flip_pi_left_right(pi, board_size):
-    pass_index = board_size*board_size
+    pass_index = board_size * board_size
     pi_2d = pi[:pass_index].reshape(board_size, board_size)
     pi_2d = np.fliplr(pi_2d)
     pi_new = pi_2d.flatten()
@@ -129,7 +129,7 @@ def flip_pi_left_right(pi, board_size):
     return pi_new
 
 def flip_pi_180(pi, board_size):
-    pass_index = board_size*board_size
+    pass_index = board_size * board_size
     pi_2d = pi[:pass_index].reshape(board_size, board_size)
     pi_2d = np.rot90(pi_2d, 2)
     pi_new = pi_2d.flatten()
@@ -200,9 +200,9 @@ def print_final_game_state(final_state: GameState):
     board_str = get_final_game_state_str(final_state)
     print(board_str)
 
-def run_training_loop(num_iterations=100,
-                      games_per_iteration=50,
-                      mcts_iterations=800,
+def run_training_loop(num_iterations=30,
+                      games_per_iteration=5,
+                      mcts_iterations=400,
                       batch_size=64,
                       epochs=10,
                       lr=0.001,
@@ -212,25 +212,23 @@ def run_training_loop(num_iterations=100,
 
     if pretrained_model is not None:
         print("Pretrained model loaded")
-        # ### 변경: 네트워크 생성 시 새로운 파라미터 적용
         network = AlphaZeroNet(board_size=9, num_actions=82, num_res_blocks=20, channels=256) 
         network.load_model(pretrained_model)
         network.to(device)
     else:
-        # ### 변경: 네트워크 생성 시 새로운 파라미터 적용
         network = AlphaZeroNet(board_size=9, num_actions=82, num_res_blocks=20, channels=256).to(device)
 
     optimizer = optim.Adam(network.parameters(), lr=lr)
     loss_fn = nn.MSELoss()
 
-    replay_buffer = deque(maxlen=50000)
+    replay_buffer = deque(maxlen=2000)
 
     total_losses = []
     policy_losses = []
     value_losses = []
 
-    for it in range(num_iterations):
-        print(f"=== Iteration {it+1}/{num_iterations} ===")
+    # [CHANGED] tqdm로 Iteration 루프 감싸기
+    for it in tqdm(range(num_iterations), desc="Iterations"):
         iteration_data = []
         all_moves = []
         final_states = []
@@ -246,18 +244,21 @@ def run_training_loop(num_iterations=100,
         else:
             temperature = 0.0
 
-        for g in range(games_per_iteration):
+        # [CHANGED] tqdm로 Self-play (games) 루프 감싸기
+        for g in tqdm(range(games_per_iteration), desc=f"Self-play (Iter {it+1})", leave=False):
             game.reset()
-            episode_data, moves, winner, final_state = self_play_episode(game, network, mcts_iterations=mcts_iterations, temperature=temperature)
+            episode_data, moves, winner, final_state = self_play_episode(
+                game, network, mcts_iterations=mcts_iterations, temperature=temperature
+            )
             iteration_data.extend(episode_data)
             all_moves.append((moves, winner))
             final_states.append(final_state)
 
         replay_buffer.extend(iteration_data)
 
+        # 게임 기록 저장
         if not os.path.exists("play_note"):
             os.makedirs("play_note")
-
         if not os.path.exists(f"play_note/{time_now}"):
             os.makedirs(f"play_note/{time_now}")
 
@@ -276,17 +277,26 @@ def run_training_loop(num_iterations=100,
             final_board_str = get_final_game_state_str(final_states[-1])
             f.write(final_board_str)
 
-        print("Iteration 마지막 게임의 최종 보드 상태:")
+        # 이번 iteration 마지막 게임 보드 출력
+        print(f"\n[Iteration {it+1}] 마지막 게임 보드 상태:")
         print_final_game_state(final_states[-1])
 
+        # ========================
+        #        Training
+        # ========================
         rb_list = list(replay_buffer)
         it_policy_loss = []
         it_value_loss = []
         it_total_loss = []
 
-        for e in range(epochs):
+        # [CHANGED] tqdm로 Epoch 루프 감싸기
+        for e in tqdm(range(epochs), desc=f"Training (Iter {it+1})", leave=False):
             random.shuffle(rb_list)
             batches = [rb_list[i:i+batch_size] for i in range(0, len(rb_list), batch_size)]
+
+            epoch_policy_losses = []
+            epoch_value_losses = []
+            epoch_total_losses = []
 
             for batch in batches:
                 states, target_pis, target_vs = zip(*batch)
@@ -294,6 +304,7 @@ def run_training_loop(num_iterations=100,
                 target_pis = np.array(target_pis, dtype=np.float32)
                 target_vs = np.array(target_vs, dtype=np.float32)
 
+                # Data Augmentation
                 states, target_pis, target_vs = augment_data(states, target_pis, target_vs, board_size=9)
 
                 states = torch.tensor(states, dtype=torch.float32, device=device)
@@ -309,19 +320,36 @@ def run_training_loop(num_iterations=100,
                 loss.backward()
                 optimizer.step()
 
-                it_policy_loss.append(policy_loss.item())
-                it_value_loss.append(value_loss.item())
-                it_total_loss.append(loss.item())
+                epoch_policy_losses.append(policy_loss.item())
+                epoch_value_losses.append(value_loss.item())
+                epoch_total_losses.append(loss.item())
 
+            # epoch 끝난 후 평균
+            mean_pol = np.mean(epoch_policy_losses)
+            mean_val = np.mean(epoch_value_losses)
+            mean_tot = np.mean(epoch_total_losses)
+            it_policy_loss.extend(epoch_policy_losses)
+            it_value_loss.extend(epoch_value_losses)
+            it_total_loss.extend(epoch_total_losses)
+
+            # [CHANGED] 에폭마다 간단한 로그
+            print(f"   Epoch {e+1}/{epochs} | Policy Loss={mean_pol:.4f} | Value Loss={mean_val:.4f} | Total={mean_tot:.4f}")
+
+        # iteration 단위로 평균 손실
         mean_policy_loss = np.mean(it_policy_loss) if it_policy_loss else 0
         mean_value_loss = np.mean(it_value_loss) if it_value_loss else 0
         mean_total_loss = np.mean(it_total_loss) if it_total_loss else 0
+        print(f"\n=== Iteration {it+1} Done ===\n"
+              f"Avg Policy Loss={mean_policy_loss:.4f}, "
+              f"Avg Value Loss={mean_value_loss:.4f}, "
+              f"Avg Total Loss={mean_total_loss:.4f}\n")
 
-        print(f"Iteration {it+1}: Total Loss={mean_total_loss:.4f}, Policy Loss={mean_policy_loss:.4f}, Value Loss={mean_value_loss:.4f}")
+        total_losses.append(mean_total_loss)
+        policy_losses.append(mean_policy_loss)
+        value_losses.append(mean_value_loss)
 
         if not os.path.exists("checkpoint"):
             os.makedirs("checkpoint")
-
         if not os.path.exists(f"checkpoint/{time_now}"):
             os.makedirs(f"checkpoint/{time_now}")
 
@@ -341,14 +369,14 @@ def run_training_loop(num_iterations=100,
     plt.savefig('training_loss.png')
     plt.show()
 
+
 if __name__ == "__main__":
-    # 변경된 네트워크 파라미터 적용한 상태에서 학습 실행
     run_training_loop(
         num_iterations=100,
-        games_per_iteration=50,
-        mcts_iterations=800,
-        batch_size=64,
-        epochs=10,
+        games_per_iteration=5,
+        mcts_iterations=200,
+        batch_size=5,
+        epochs=64,
         lr=0.001,
         pretrained_model=None
     )
